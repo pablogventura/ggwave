@@ -673,7 +673,7 @@ const GGWave::Parameters & GGWave::getDefaultParameters() {
         GGWAVE_SAMPLE_FORMAT_F32,
         GGWAVE_SAMPLE_FORMAT_F32,
         GGWAVE_OPERATING_MODE_RX | GGWAVE_OPERATING_MODE_TX,
-        1,  // useECC: 1 = enable (default)
+        0,  // useECC: 0 = disable (default), 1 = enable Reed-Solomon
     };
 
     return result;

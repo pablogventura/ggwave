@@ -13,7 +13,7 @@ def getDefaultParameters():
 
 def init(parameters = None):
     """Create a GGWave instance. parameters: optional ggwave_Parameters (e.g. from getDefaultParameters()).
-       Set parameters.useECC = 0 to disable Reed-Solomon error correction (smaller payload, no correction)."""
+       By default ECC is off. Set parameters.useECC = 1 to enable Reed-Solomon error correction."""
     if (parameters is None):
         parameters = getDefaultParameters()
 
