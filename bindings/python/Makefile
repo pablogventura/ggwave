@@ -11,7 +11,7 @@ DEB_BUILD_DIR := $(DEST)$(PKG_NAME)-$(VERSION)
 DEB_VER := 0
 DEB := python3-$(PKG_NAME)_$(VERSION)-$(DEB_VER)_$(ARCH).deb
 SOURCE_DATE_EPOCH := $(shell git log -1 --pretty=%ct)
-SOURCE_PKG_CMD := python -m build --sdist
+SOURCE_PKG_CMD := python setup.py sdist
 DEB_BUILD_CMD := dpkg-buildpackage -rfakeroot -uc -us
 COGAPP ?= $(shell which cog || which cogapp)
 
@@ -41,7 +41,7 @@ $(DEST)$(DEB): $(DEST)$(ORIG_TGZ)
 	cd $(DEB_BUILD_DIR) && \
 	DEB_BUILD_OPTIONS=$(DEB_BUILD_OPTIONS) $(DEB_BUILD_CMD)
 
-deb_sdist: $(BUILD_SOURCE_FILES) README.rst
+deb_sdist: $(BUILD_FILES)
 	SOURCE_DATE_EPOCH=$(SOURCE_DATE_EPOCH) $(SOURCE_PKG_CMD)
 	mv $(DEST)$(PKG_NAME)-$(VERSION).tar.gz $(DEST)$(ORIG_TGZ)
 
@@ -52,12 +52,6 @@ deb: _deb deb_sdist $(DEST)$(DEB)
 	dpkg --contents $(DEST)$(DEB)
 	ls -alh $(DEST)*$(PKG_NAME)*
 	sha256sum $(DEST)$(DEB)
-
-buildWithoutREADME.rst: ${BUILD_SOURCE_FILES}
-	GGWAVE_OMIT_README_RST=1 python setup.py build_ext -i
-
-README.rst: buildWithoutREADME.rst README-tmpl.rst
-	$(COGAPP) -d -o README.rst README-tmpl.rst
 
 BUILD_FILES=${BUILD_SOURCE_FILES} README.rst
 
@@ -73,4 +67,3 @@ publish: clean sdist
 clean:
 	rm -rf ggwave dist ggwave.egg-info build
 	rm -f ggwave.c *.bycython.* ggwave.*.so
-	rm -f README.rst
