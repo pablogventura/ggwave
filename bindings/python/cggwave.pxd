@@ -50,6 +50,7 @@ cdef extern from "ggwave.h" nogil:
         ggwave_SampleFormat sampleFormatInp
         ggwave_SampleFormat sampleFormatOut
         int operatingMode
+        int useECC
 
     ctypedef int ggwave_Instance
 

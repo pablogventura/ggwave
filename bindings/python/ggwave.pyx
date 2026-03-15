@@ -12,6 +12,8 @@ def getDefaultParameters():
     return cggwave.ggwave_getDefaultParameters()
 
 def init(parameters = None):
+    """Create a GGWave instance. parameters: optional ggwave_Parameters (e.g. from getDefaultParameters()).
+       Set parameters.useECC = 0 to disable Reed-Solomon error correction (smaller payload, no correction)."""
     if (parameters is None):
         parameters = getDefaultParameters()
 

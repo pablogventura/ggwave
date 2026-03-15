@@ -67,7 +67,8 @@ ggwave_Instance ggwave_init(ggwave_Parameters parameters) {
                 parameters.soundMarkerThreshold,
                 parameters.sampleFormatInp,
                 parameters.sampleFormatOut,
-                parameters.operatingMode});
+                parameters.operatingMode,
+                parameters.useECC});
 
             return id;
         }
@@ -500,6 +501,7 @@ bool GGWave::prepare(const Parameters & parameters, bool allocate) {
     m_needResampling       = m_sampleRateInp != m_sampleRate || m_sampleRateOut != m_sampleRate;
     m_txOnlyTones          = parameters.operatingMode & GGWAVE_OPERATING_MODE_TX_ONLY_TONES;
     m_isDSSEnabled         = parameters.operatingMode & GGWAVE_OPERATING_MODE_USE_DSS;
+    m_useECC               = (parameters.useECC != 0);
 
     if (m_sampleSizeInp == 0) {
         ggprintf("Invalid or unsupported capture sample format: %d\n", (int) parameters.sampleFormatInp);
@@ -576,12 +578,12 @@ bool GGWave::prepare(const Parameters & parameters, bool allocate) {
 
 bool GGWave::alloc(void * p, int & n) {
     const int maxLength   = m_isFixedPayloadLength ? m_payloadLength : kMaxLengthVariable;
-    const int totalLength = maxLength + getECCBytesForLength(maxLength);
+    const int totalLength = maxLength + getECCBytes(maxLength);
     const int totalTxs    = (totalLength + minBytesPerTx(Protocols::rx()) - 1)/minBytesPerTx(Protocols::tx());
 
     if (totalLength > kMaxDataSize) {
         ggprintf("Error: total length %d (payload %d + ECC %d bytes) is too large ( > %d)\n",
-                 totalLength, maxLength, getECCBytesForLength(maxLength), kMaxDataSize);
+                 totalLength, maxLength, getECCBytes(maxLength), kMaxDataSize);
         return false;
     }
 
@@ -639,14 +641,14 @@ bool GGWave::alloc(void * p, int & n) {
         ::ggalloc(m_tx.tones,    maxTones*totalTxs + (maxTones > 1 ? totalTxs : 0), p, n);
     }
 
-    // pre-allocate Reed-Solomon memory buffers
-    {
+    // pre-allocate Reed-Solomon memory buffers (only when ECC enabled)
+    if (m_useECC) {
         const auto maxLength = m_isFixedPayloadLength ? m_payloadLength : kMaxLengthVariable;
 
         if (m_isFixedPayloadLength == false) {
             ::ggalloc(m_workRSLength, RS::ReedSolomon::getWorkSize_bytes(1, m_encodedDataOffset - 1), p, n);
         }
-        ::ggalloc(m_workRSData, RS::ReedSolomon::getWorkSize_bytes(maxLength, getECCBytesForLength(maxLength)), p, n);
+        ::ggalloc(m_workRSData, RS::ReedSolomon::getWorkSize_bytes(maxLength, getECCBytes(maxLength)), p, n);
     }
 
     if (m_needResampling) {
@@ -662,7 +664,7 @@ void GGWave::setLogFile(FILE * fptr) {
 
 const GGWave::Parameters & GGWave::getDefaultParameters() {
     static ggwave_Parameters result {
-        -1, // vaiable payload length
+        -1, // variable payload length
         kDefaultSampleRate,
         kDefaultSampleRate,
         kDefaultSampleRate,
@@ -671,9 +673,14 @@ const GGWave::Parameters & GGWave::getDefaultParameters() {
         GGWAVE_SAMPLE_FORMAT_F32,
         GGWAVE_SAMPLE_FORMAT_F32,
         GGWAVE_OPERATING_MODE_RX | GGWAVE_OPERATING_MODE_TX,
+        1,  // useECC: 1 = enable (default)
     };
 
     return result;
+}
+
+int GGWave::getECCBytes(int len) const {
+    return m_useECC ? ::getECCBytesForLength(len) : 0;
 }
 
 bool GGWave::init(const char * text, TxProtocolId protocolId, const int volume) {
@@ -780,7 +787,7 @@ uint32_t GGWave::encodeSize_samples() const {
         // note : +1 extra sample in order to overestimate the buffer size
         samplesPerFrameOut = m_resampler.resample(factor, m_samplesPerFrame, m_tx.output.data(), nullptr) + 1;
     }
-    const int nECCBytesPerTx = getECCBytesForLength(m_tx.dataLength);
+    const int nECCBytesPerTx = getECCBytes(m_tx.dataLength);
     const int sendDataLength = m_tx.dataLength + m_encodedDataOffset;
     const int totalBytes = sendDataLength + nECCBytesPerTx;
     const int totalDataFrames = m_tx.protocol.extra*((totalBytes + m_tx.protocol.bytesPerTx - 1)/m_tx.protocol.bytesPerTx)*m_tx.protocol.framesPerTx;
@@ -800,19 +807,26 @@ uint32_t GGWave::encode() {
         m_resampler.reset();
     }
 
-    const int nECCBytesPerTx = getECCBytesForLength(m_tx.dataLength);
+    const int nECCBytesPerTx = getECCBytes(m_tx.dataLength);
     const int sendDataLength = m_tx.dataLength + m_encodedDataOffset;
     const int totalBytes = sendDataLength + nECCBytesPerTx;
     const int totalDataFrames = m_tx.protocol.extra*((totalBytes + m_tx.protocol.bytesPerTx - 1)/m_tx.protocol.bytesPerTx)*m_tx.protocol.framesPerTx;
 
-    if (m_isFixedPayloadLength == false) {
-        RS::ReedSolomon rsLength(1, m_encodedDataOffset - 1, m_workRSLength.data());
-        rsLength.Encode(m_tx.data.data(), m_dataEncoded.data());
+    if (m_useECC) {
+        if (m_isFixedPayloadLength == false) {
+            RS::ReedSolomon rsLength(1, m_encodedDataOffset - 1, m_workRSLength.data());
+            rsLength.Encode(m_tx.data.data(), m_dataEncoded.data());
+        }
+        RS::ReedSolomon rsData = RS::ReedSolomon(m_tx.dataLength, nECCBytesPerTx, m_workRSData.data());
+        rsData.Encode(m_tx.data.data() + 1, m_dataEncoded.data() + m_encodedDataOffset);
+    } else {
+        // no ECC: first byte = length, then padding to m_encodedDataOffset, then payload
+        m_dataEncoded[0] = m_tx.data[0];
+        for (int i = 1; i < m_encodedDataOffset; ++i) m_dataEncoded[i] = 0;
+        for (int i = 0; i < m_tx.dataLength; ++i) {
+            m_dataEncoded[m_encodedDataOffset + i] = m_tx.data[i + 1];
+        }
     }
-
-    // first byte of m_tx.data contains the length of the payload, so we skip it:
-    RS::ReedSolomon rsData = RS::ReedSolomon(m_tx.dataLength, nECCBytesPerTx, m_workRSData.data());
-    rsData.Encode(m_tx.data.data() + 1, m_dataEncoded.data() + m_encodedDataOffset);
 
     // generate tones
     {
@@ -1693,27 +1707,35 @@ void GGWave::decode_variable() {
                     }
 
                     if (itx*protocol.bytesPerTx > m_encodedDataOffset && knownLength == false) {
-                        RS::ReedSolomon rsLength(1, m_encodedDataOffset - 1, m_workRSLength.data());
-                        if ((rsLength.Decode(m_dataEncoded.data(), m_rx.data.data()) == 0) && (m_rx.data[0] > 0 && m_rx.data[0] <= 140)) {
-                            knownLength = true;
-                            decodedLength = m_rx.data[0];
-                            //printf("decoded length = %d, recvDuration_frames = %d\n", decodedLength, m_rx.recvDuration_frames);
-
-                            const int nTotalBytesExpected = m_encodedDataOffset + decodedLength + ::getECCBytesForLength(decodedLength);
-                            const int nTotalFramesExpected = 2*m_nMarkerFrames + ((nTotalBytesExpected + protocol.bytesPerTx - 1)/protocol.bytesPerTx)*protocol.framesPerTx;
-                            if (m_rx.recvDuration_frames > nTotalFramesExpected ||
-                                m_rx.recvDuration_frames < nTotalFramesExpected - 2*m_nMarkerFrames) {
-                                //printf("  - invalid number of frames: %d (expected %d)\n", m_rx.recvDuration_frames, nTotalFramesExpected);
-                                knownLength = false;
+                        if (m_useECC) {
+                            RS::ReedSolomon rsLength(1, m_encodedDataOffset - 1, m_workRSLength.data());
+                            if ((rsLength.Decode(m_dataEncoded.data(), m_rx.data.data()) == 0) && (m_rx.data[0] > 0 && m_rx.data[0] <= 140)) {
+                                decodedLength = m_rx.data[0];
+                                knownLength = true;
+                            } else {
                                 break;
                             }
                         } else {
-                            break;
+                            decodedLength = m_dataEncoded[0];
+                            if (decodedLength > 0 && decodedLength <= 140) {
+                                knownLength = true;
+                            } else {
+                                break;
+                            }
+                        }
+                        if (knownLength) {
+                            const int nTotalBytesExpected = m_encodedDataOffset + decodedLength + getECCBytes(decodedLength);
+                            const int nTotalFramesExpected = 2*m_nMarkerFrames + ((nTotalBytesExpected + protocol.bytesPerTx - 1)/protocol.bytesPerTx)*protocol.framesPerTx;
+                            if (m_rx.recvDuration_frames > nTotalFramesExpected ||
+                                m_rx.recvDuration_frames < nTotalFramesExpected - 2*m_nMarkerFrames) {
+                                knownLength = false;
+                                break;
+                            }
                         }
                     }
 
                     {
-                        const int nTotalBytesExpected = m_encodedDataOffset + decodedLength + ::getECCBytesForLength(decodedLength);
+                        const int nTotalBytesExpected = m_encodedDataOffset + decodedLength + getECCBytes(decodedLength);
                         if (knownLength && itx*protocol.bytesPerTx > nTotalBytesExpected + 1) {
                             break;
                         }
@@ -1721,25 +1743,31 @@ void GGWave::decode_variable() {
                 }
 
                 if (knownLength) {
-                    RS::ReedSolomon rsData(decodedLength, ::getECCBytesForLength(decodedLength), m_workRSData.data());
-
-                    if (rsData.Decode(m_dataEncoded.data() + m_encodedDataOffset, m_rx.data.data()) == 0) {
-                        if (decodedLength > 0) {
-                            if (m_isDSSEnabled) {
-                                for (int i = 0; i < decodedLength; ++i) {
-                                    m_rx.data[i] = m_rx.data[i] ^ getDSSMagic(i);
-                                }
-                            }
-
-                            ggprintf("Decoded length = %d, protocol = '%s' (%d)\n", decodedLength, protocol.name, protocolId);
-                            ggprintf("Received sound data successfully: '%s'\n", m_rx.data.data());
-
-                            isValid = true;
-                            m_rx.hasNewRxData = true;
-                            m_rx.dataLength = decodedLength;
-                            m_rx.protocol = protocol;
-                            m_rx.protocolId = RxProtocolId(protocolId);
+                    bool decodeOk = false;
+                    if (m_useECC) {
+                        RS::ReedSolomon rsData(decodedLength, getECCBytes(decodedLength), m_workRSData.data());
+                        decodeOk = (rsData.Decode(m_dataEncoded.data() + m_encodedDataOffset, m_rx.data.data()) == 0);
+                    } else {
+                        for (int i = 0; i < decodedLength; ++i) {
+                            m_rx.data[i] = m_dataEncoded[m_encodedDataOffset + i];
                         }
+                        decodeOk = true;
+                    }
+                    if (decodeOk && decodedLength > 0) {
+                        if (m_isDSSEnabled) {
+                            for (int i = 0; i < decodedLength; ++i) {
+                                m_rx.data[i] = m_rx.data[i] ^ getDSSMagic(i);
+                            }
+                        }
+
+                        ggprintf("Decoded length = %d, protocol = '%s' (%d)\n", decodedLength, protocol.name, protocolId);
+                        ggprintf("Received sound data successfully: '%s'\n", m_rx.data.data());
+
+                        isValid = true;
+                        m_rx.hasNewRxData = true;
+                        m_rx.dataLength = decodedLength;
+                        m_rx.protocol = protocol;
+                        m_rx.protocolId = RxProtocolId(protocolId);
                     }
                 }
 
@@ -1818,7 +1846,7 @@ void GGWave::decode_variable() {
             m_rx.recvDuration_frames =
                 2*m_nMarkerFrames +
                 maxFramesPerTx(m_rx.protocols, true)*(
-                        (kMaxLengthVariable + ::getECCBytesForLength(kMaxLengthVariable))/minBytesPerTx(m_rx.protocols) + 1
+                        (kMaxLengthVariable + getECCBytes(kMaxLengthVariable))/minBytesPerTx(m_rx.protocols) + 1
                         );
 
             m_rx.nMarkersSuccess = 0;
@@ -1925,7 +1953,7 @@ void GGWave::decode_fixed() {
             continue;
         }
 
-        const int totalLength = m_payloadLength + getECCBytesForLength(m_payloadLength);
+        const int totalLength = m_payloadLength + getECCBytes(m_payloadLength);
         const int totalTxs = protocol.extra*((totalLength + protocol.bytesPerTx - 1)/protocol.bytesPerTx);
 
         int historyStartId = m_rx.historyIdFixed - totalTxs*protocol.framesPerTx;
@@ -2014,13 +2042,21 @@ void GGWave::decode_fixed() {
         }
 
         if (detectedSignal) {
-            RS::ReedSolomon rsData(m_payloadLength, getECCBytesForLength(m_payloadLength), m_workRSData.data());
-
             for (int j = 0; j < totalLength; ++j) {
                 m_dataEncoded[j] = (m_rx.detectedBins[2*j + 1] << 4) + m_rx.detectedBins[2*j + 0];
             }
 
-            if (rsData.Decode(m_dataEncoded.data(), m_rx.data.data()) == 0) {
+            bool decodeOk = false;
+            if (m_useECC) {
+                RS::ReedSolomon rsData(m_payloadLength, getECCBytes(m_payloadLength), m_workRSData.data());
+                decodeOk = (rsData.Decode(m_dataEncoded.data(), m_rx.data.data()) == 0);
+            } else {
+                for (int i = 0; i < m_payloadLength; ++i) {
+                    m_rx.data[i] = m_dataEncoded[i];
+                }
+                decodeOk = true;
+            }
+            if (decodeOk) {
                 if (m_isDSSEnabled) {
                     for (int i = 0; i < m_payloadLength; ++i) {
                         m_rx.data[i] = m_rx.data[i] ^ getDSSMagic(i);
