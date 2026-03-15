@@ -128,7 +128,7 @@ extern "C" {
     //   example, if only Rx is enabled, then the memory buffers needed for the Tx will
     //   not be allocated.
     //
-    //   useECC: 1 = enable Reed-Solomon error correction, 0 = disable (default).
+    //   useECC: 1 = enable Reed-Solomon error correction (default), 0 = disable.
     //
     typedef struct {
         int                 payloadLength;        // payload length
@@ -140,7 +140,7 @@ extern "C" {
         ggwave_SampleFormat sampleFormatInp;      // format of the captured audio samples
         ggwave_SampleFormat sampleFormatOut;      // format of the playback audio samples
         int                 operatingMode;        // operating mode
-        int                 useECC;               // 1 = enable ECC, 0 = disable (default)
+        int                 useECC;               // 1 = enable ECC (default), 0 = disable
     } ggwave_Parameters;
 
     // GGWave instances are identified with an integer and are stored
@@ -924,7 +924,7 @@ private:
     bool         m_needResampling       = false;
     bool         m_txOnlyTones          = false;
     bool         m_isDSSEnabled         = false;
-    bool         m_useECC              = false;
+    bool         m_useECC              = true;
 
     // Common
     TxRxData m_dataEncoded;
